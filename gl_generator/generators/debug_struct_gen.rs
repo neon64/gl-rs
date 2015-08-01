@@ -15,6 +15,7 @@
 
 use registry::{Registry, Ns};
 use std::io;
+use std::collections::HashMap;
 
 #[allow(missing_copy_implementations)]
 pub struct DebugStructGenerator;
@@ -26,8 +27,15 @@ impl super::Generator for DebugStructGenerator {
         try!(write_enums(registry, dest));
         try!(write_fnptr_struct_def(dest));
         try!(write_panicking_fns(&ns, dest));
-        try!(write_struct(registry, &ns, dest));
-        try!(write_impl(registry, &ns, dest));
+
+        // allows the overriding of some functions
+        let mut fn_overrides = HashMap::new();
+        fn_overrides.insert("glDebugMessageCallback", ("fallback_debug_message_callback", "debug_output_fallback_required"));
+        fn_overrides.insert("glDebugMessageInsert", ("fallback_debug_message_insert", "debug_output_fallback_required"));
+        fn_overrides.insert("glGetError", ("fallback_get_error", "debug_output_fallback_required"));
+
+        try!(write_struct(registry, &ns, &fn_overrides, dest));
+        try!(write_impl(registry, &ns, &fn_overrides, dest));
         Ok(())
     }
 }
@@ -41,6 +49,9 @@ fn write_header<W>(dest: &mut W) -> io::Result<()> where W: io::Write {
             extern crate libc;
             pub use std::mem;
             pub use std::marker::Send;
+            pub use std::cell::RefCell;
+            pub use std::ptr::null_mut;
+            pub use std::ffi::CString;
         }}
     "#)
 }
@@ -77,7 +88,7 @@ fn write_fnptr_struct_def<W>(dest: &mut W) -> io::Result<()> where W: io::Write 
         #[allow(dead_code)]
         #[allow(missing_copy_implementations)]
         #[allow(raw_pointer_derive)]
-        #[derive(Clone)]
+        #[derive(Clone, Debug)]
         pub struct FnPtr {{
             /// The function pointer that will be used when calling the function.
             f: *const __gl_imports::libc::c_void,
@@ -85,16 +96,37 @@ fn write_fnptr_struct_def<W>(dest: &mut W) -> io::Result<()> where W: io::Write 
             is_loaded: bool,
         }}
 
+        #[allow(dead_code)]
+        #[allow(raw_pointer_derive)]
+        #[allow(missing_copy_implementations)]
+        #[derive(Clone, Debug)]
+        pub enum OverridableFnPtr {{
+            Loaded(*const __gl_imports::libc::c_void),
+            Overridden(*const __gl_imports::libc::c_void, *const __gl_imports::libc::c_void)
+        }}
+
+        impl OverridableFnPtr {{
+            pub fn get_original(&self) -> *const __gl_imports::libc::c_void {{
+                match *self {{
+                    OverridableFnPtr::Loaded(ptr) => ptr,
+                    OverridableFnPtr::Overridden(original, _) => original
+                }}
+            }}
+        }}
+
         impl FnPtr {{
             /// Creates a `FnPtr` from a load attempt.
-            fn new(ptr: *const __gl_imports::libc::c_void) -> FnPtr {{
+            fn new(ptr: *const __gl_imports::libc::c_void) -> Self {{
                 if ptr.is_null() {{
                     FnPtr {{
                         f: missing_fn_panic as *const __gl_imports::libc::c_void,
                         is_loaded: false
                     }}
                 }} else {{
-                    FnPtr {{ f: ptr, is_loaded: true }}
+                    FnPtr {{
+                        f: ptr,
+                        is_loaded: true
+                    }}
                 }}
             }}
 
@@ -126,30 +158,51 @@ fn write_panicking_fns<W>(ns: &Ns, dest: &mut W) -> io::Result<()> where W: io::
 /// Creates a structure which stores all the `FnPtr` of the bindings.
 ///
 /// The name of the struct corresponds to the namespace.
-fn write_struct<W>(registry: &Registry, ns: &Ns, dest: &mut W) -> io::Result<()> where W: io::Write {
+fn write_struct<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&str, &str)>, dest: &mut W) -> io::Result<()> where W: io::Write {
+    try!(dest.write(include_str!("debug_output/header.rs").as_bytes()));
+
     try!(writeln!(dest, "
         #[allow(non_camel_case_types)]
         #[allow(non_snake_case)]
         #[allow(dead_code)]
-        #[derive(Clone)]
-        pub struct {ns} {{",
+        pub struct {ns} {{
+            trace_callback: Box<Fn(&str, &str)>,
+            debug_output: __gl_imports::RefCell<DebugOutputState>,",
         ns = ns.fmt_struct_name()
     ));
 
     for c in registry.cmd_iter() {
+        let symbol = super::gen_symbol_name(ns, &c.proto.ident);
+
         if let Some(v) = registry.aliases.get(&c.proto.ident) {
             try!(writeln!(dest, "/// Fallbacks: {}", v.connect(", ")));
         }
-        try!(writeln!(dest, "pub {name}: FnPtr,", name = c.proto.ident));
+        if fn_overrides.contains_key(&*symbol) {
+            try!(writeln!(dest,
+                "pub {name}: OverridableFnPtr,",
+                name = c.proto.ident
+            ));
+        } else {
+            try!(writeln!(dest,
+                "pub {name}: FnPtr,",
+                name = c.proto.ident
+            ));
+        }
     }
 
     writeln!(dest, "}}")
 }
 
 /// Creates the `impl` of the structure created by `write_struct`.
-fn write_impl<W>(registry: &Registry, ns: &Ns, dest: &mut W) -> io::Result<()> where W: io::Write {
+fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&str, &str)>, dest: &mut W) -> io::Result<()> where W: io::Write {
     try!(writeln!(dest,
-        "impl {ns} {{
+        "impl {ns} {{",
+        ns = ns.fmt_struct_name()
+    ));
+
+    try!(dest.write(include_str!("debug_output/impl.rs").as_bytes()));
+
+    try!(writeln!(dest, "
             /// Load each OpenGL symbol using a custom load function. This allows for the
             /// use of functions like `glfwGetProcAddress` or `SDL_GL_GetProcAddress`.
             ///
@@ -158,7 +211,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, dest: &mut W) -> io::Result<()> w
             /// ~~~
             #[allow(dead_code)]
             #[allow(unused_variables)]
-            pub fn load_with<F>(mut loadfn: F) -> {ns} where F: FnMut(&str) -> *const __gl_imports::libc::c_void {{
+            pub fn load_with<F>(mut loadfn: F, trace_callback: Box<Fn(&str, &str)>) -> {ns} where F: FnMut(&str) -> *const __gl_imports::libc::c_void {{
                 let mut metaloadfn = |symbol: &str, symbols: &[&str]| {{
                     let mut ptr = loadfn(symbol);
                     if ptr.is_null() {{
@@ -169,15 +222,26 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, dest: &mut W) -> io::Result<()> w
                     }}
                     ptr
                 }};
-                {ns} {{",
+
+                let debug_output_fallback_required = !metaloadfn(\"glDebugMessageCallback\", &[\"glDebugMessageCallbackARB\", \"glDebugMessageCallbackKHR\"]).is_null();
+
+                {ns} {{
+                    trace_callback: trace_callback,
+                    debug_output: __gl_imports::RefCell::new(DebugOutputState {{
+                        enabled: true,
+                        callback: None,
+                        user_param: __gl_imports::null_mut(),
+                        last_error: NO_ERROR
+                    }}),",
         ns = ns.fmt_struct_name()
     ));
 
     for c in registry.cmd_iter() {
-        try!(writeln!(dest,
-            "{name}: FnPtr::new(metaloadfn(\"{symbol}\", &[{fallbacks}])),",
-            name = c.proto.ident,
-            symbol = super::gen_symbol_name(ns, &c.proto.ident),
+        let symbol = super::gen_symbol_name(ns, &c.proto.ident);
+
+        let load = format!(
+            "metaloadfn(\"{symbol}\", &[{fallbacks}])",
+            symbol = symbol,
             fallbacks = match registry.aliases.get(&c.proto.ident) {
                 Some(fbs) => {
                     fbs.iter()
@@ -185,8 +249,34 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, dest: &mut W) -> io::Result<()> w
                        .collect::<Vec<_>>().connect(", ")
                 },
                 None => format!(""),
+            }
+        );
+
+        match fn_overrides.get(&*symbol) {
+            Some(&(fn_override, condition)) => {
+                let typed_params = super::gen_parameters(c, false, true);
+                let return_suffix = super::gen_return_type(c);
+                let override_params = typed_params_to_override_params(ns.fmt_struct_name(), typed_params, &return_suffix);
+
+                try!(writeln!(
+                    dest,
+                    "{name}: if {condition} {{ OverridableFnPtr::Loaded({load}) }} else {{ let override_fn: *const extern \"system\" fn({override_params}) -> {return_suffix} = {struct_name}::{fn_override} as *const _; OverridableFnPtr::Overridden({load}, override_fn as *const __gl_imports::libc::c_void) }},",
+                    name = c.proto.ident,
+                    struct_name = ns.fmt_struct_name(),
+                    fn_override = fn_override,
+                    load = load,
+                    override_params = override_params.connect(", "),
+                    return_suffix = return_suffix,
+                    condition = condition
+                ))
             },
-        ))
+            None => try!(writeln!(
+                dest,
+                "{name}: FnPtr::new({load}),",
+                name = c.proto.ident,
+                load = load
+            ))
+        };
     }
 
     try!(writeln!(dest,
@@ -200,19 +290,21 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, dest: &mut W) -> io::Result<()> w
         /// ~~~
         #[allow(dead_code)]
         #[allow(unused_variables)]
-        pub fn load<T: __gl_imports::gl_common::GlFunctionsSource>(loader: &T) -> {ns} {{
-            {ns}::load_with(|name| loader.get_proc_addr(name))
+        pub fn load<T: __gl_imports::gl_common::GlFunctionsSource>(loader: &T, trace_callback: Box<Fn(&str, &str)>) -> {ns} {{
+            {ns}::load_with(|name| loader.get_proc_addr(name), trace_callback)
         }}",
         ns = ns.fmt_struct_name()
     ));
 
     for c in registry.cmd_iter() {
+        let symbol = super::gen_symbol_name(ns, &c.proto.ident);
         let idents = super::gen_parameters(c, true, false);
         let typed_params = super::gen_parameters(c, false, true);
-        let println = format!("println!(\"[OpenGL] {}({})\" {});",
-                                c.proto.ident,
-                                (0 .. idents.len()).map(|_| "{:?}".to_string()).collect::<Vec<_>>().connect(", "),
-                                idents.iter().zip(typed_params.iter())
+        let return_suffix = super::gen_return_type(c);
+        let println = format!("(self.trace_callback)(\"{ident}\", &format!(\"{ident}({params})\"{args}));",
+                                ident = c.proto.ident,
+                                params = (0 .. idents.len()).map(|_| "{:?}".to_string()).collect::<Vec<_>>().connect(", "),
+                                args = idents.iter().zip(typed_params.iter())
                                       .map(|(name, ty)| {
                                           if ty.contains("GLDEBUGPROC") {
                                               format!(", \"<callback>\"")
@@ -221,27 +313,48 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, dest: &mut W) -> io::Result<()> w
                                           }
                                       }).collect::<Vec<_>>().concat());
 
+        let call = match fn_overrides.get(&*symbol) {
+            Some(_) => {
+                let connected_typed_params = typed_params.connect(", ");
+                let override_params = typed_params_to_override_params(ns.fmt_struct_name(), typed_params, &return_suffix);
+                format!(
+                    "match self.{name} {{
+                        OverridableFnPtr::Overridden(original, new) => __gl_imports::mem::transmute::<_, extern \"system\" fn({override_params}) -> {return_suffix}>(new)(&self, &__gl_imports::mem::transmute::<_, extern \"system\" fn({typed_params}) -> {return_suffix}>(original), {idents}),
+                        OverridableFnPtr::Loaded(original) => __gl_imports::mem::transmute::<_, extern \"system\" fn({typed_params}) -> {return_suffix}>(original)({idents})
+                    }}",
+                    name = c.proto.ident,
+                    override_params = override_params.connect(", "),
+                    typed_params = connected_typed_params,
+                    return_suffix = return_suffix,
+                    idents = idents.connect(", ")
+                )
+            },
+            None => {
+                format!(
+                    "__gl_imports::mem::transmute::<_, extern \"system\" fn({typed_params}) -> {return_suffix}>\
+                    (self.{name}.f)({idents})",
+                    name = c.proto.ident,
+                    typed_params = typed_params.connect(", "),
+                    return_suffix = return_suffix,
+                    idents = idents.connect(", ")
+                )
+            }
+        };
+
         try!(writeln!(dest,
             "#[allow(non_snake_case)] #[allow(unused_variables)] #[allow(dead_code)]
             #[inline] pub unsafe fn {name}(&self, {params}) -> {return_suffix} {{ \
                 {println}
-                let r = __gl_imports::mem::transmute::<_, extern \"system\" fn({typed_params}) -> {return_suffix}>\
-                    (self.{name}.f)({idents});
-                {print_err}
+                let r = {call};
+                self.on_fn_called(\"{full_name}\");
                 r
             }}",
             name = c.proto.ident,
+            full_name = symbol,
             params = super::gen_parameters(c, true, true).connect(", "),
-            typed_params = typed_params.connect(", "),
             return_suffix = super::gen_return_type(c),
-            idents = idents.connect(", "),
-            println = println,
-            print_err = if c.proto.ident != "GetError" && registry.cmd_iter().find(|c| c.proto.ident == "GetError").is_some() {
-                format!(r#"match __gl_imports::mem::transmute::<_, extern "system" fn() -> u32>
-                    (self.GetError.f)() {{ 0 => (), r => println!("[OpenGL] ^ GL error triggered: {{}}", r) }}"#)
-            } else {
-                format!("")
-            }
+            call = call,
+            println = println
         ))
     }
 
@@ -251,4 +364,15 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, dest: &mut W) -> io::Result<()> w
         unsafe impl __gl_imports::Send for {ns} {{}}",
         ns = ns.fmt_struct_name()
     )
+}
+
+fn typed_params_to_override_params(struct_name: &str, typed_params: Vec<String>, return_suffix: &str) -> Vec<String> {
+    let mut override_params = vec!(
+        format!("&{}", struct_name),
+        format!("&extern \"system\" fn({typed_params}) -> {return_suffix}", typed_params = typed_params.connect(", "), return_suffix = return_suffix)
+    );
+    for param in typed_params {
+        override_params.push(param);
+    }
+    override_params
 }
