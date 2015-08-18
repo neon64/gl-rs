@@ -166,7 +166,7 @@ fn write_struct<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&
         #[allow(non_snake_case)]
         #[allow(dead_code)]
         pub struct {ns} {{
-            trace_callback: Box<Fn(&str, &str)>,
+            trace_callback: Box<Fn(&str, &str, &str)>,
             debug_output: __gl_imports::RefCell<DebugOutputState>,",
         ns = ns.fmt_struct_name()
     ));
@@ -211,7 +211,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
             /// ~~~
             #[allow(dead_code)]
             #[allow(unused_variables)]
-            pub fn load_with<F>(mut loadfn: F, trace_callback: Box<Fn(&str, &str)>) -> {ns} where F: FnMut(&str) -> *const __gl_imports::libc::c_void {{
+            pub fn load_with<F>(mut loadfn: F, trace_callback: Box<Fn(&str, &str, &str)>) -> {ns} where F: FnMut(&str) -> *const __gl_imports::libc::c_void {{
                 let mut metaloadfn = |symbol: &str, symbols: &[&str]| {{
                     let mut ptr = loadfn(symbol);
                     if ptr.is_null() {{
@@ -290,7 +290,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
         /// ~~~
         #[allow(dead_code)]
         #[allow(unused_variables)]
-        pub fn load<T: __gl_imports::gl_common::GlFunctionsSource>(loader: &T, trace_callback: Box<Fn(&str, &str)>) -> {ns} {{
+        pub fn load<T: __gl_imports::gl_common::GlFunctionsSource>(loader: &T, trace_callback: Box<Fn(&str, &str, &str)>) -> {ns} {{
             {ns}::load_with(|name| loader.get_proc_addr(name), trace_callback)
         }}",
         ns = ns.fmt_struct_name()
@@ -301,7 +301,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
         let idents = super::gen_parameters(c, true, false);
         let typed_params = super::gen_parameters(c, false, true);
         let return_suffix = super::gen_return_type(c);
-        let println = format!("(self.trace_callback)(\"{ident}\", &format!(\"{ident}({params})\"{args}));",
+        let println = format!("(self.trace_callback)(\"{ident}\", &format!(\"{params}\"{args}), &format!(\"{{:?}}\", r));",
                                 ident = c.proto.ident,
                                 params = (0 .. idents.len()).map(|_| "{:?}".to_string()).collect::<Vec<_>>().connect(", "),
                                 args = idents.iter().zip(typed_params.iter())
@@ -344,8 +344,8 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
         try!(writeln!(dest,
             "#[allow(non_snake_case)] #[allow(unused_variables)] #[allow(dead_code)]
             #[inline] pub unsafe fn {name}(&self, {params}) -> {return_suffix} {{ \
-                {println}
                 let r = {call};
+                {println}
                 self.on_fn_called(\"{full_name}\");
                 r
             }}",

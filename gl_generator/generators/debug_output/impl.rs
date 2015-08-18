@@ -82,8 +82,11 @@ fn debug_message_insert_internal(&self, source: types::GLenum, ty: types::GLenum
 /// artificially creates a gl error
 fn insert_api_error(&self, ty: types::GLenum, message: &str) {
     self.debug_output.borrow_mut().last_error = ty;
+    /*println!("{:?}", message as *const _ as *const __gl_imports::libc::c_void);
     let message = __gl_imports::CString::new(message).unwrap();
-    self.debug_message_insert_internal(DEBUG_SOURCE_API, DEBUG_TYPE_ERROR, ty, DEBUG_SEVERITY_HIGH, -1, message.as_ptr());
+    println!("{:?}", message);
+    println!("{:?}", message.as_ptr());*/
+    self.debug_message_insert_internal(DEBUG_SOURCE_API, DEBUG_TYPE_ERROR, ty, DEBUG_SEVERITY_HIGH, /*-1*/ message.len() as i32, message.as_bytes().as_ptr() as *const i8);
 }
 
 /// checks for an OpenGL error and reports it
