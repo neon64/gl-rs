@@ -175,7 +175,7 @@ fn write_struct<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&
         let symbol = super::gen_symbol_name(ns, &c.proto.ident);
 
         if let Some(v) = registry.aliases.get(&c.proto.ident) {
-            try!(writeln!(dest, "/// Fallbacks: {}", v.connect(", ")));
+            try!(writeln!(dest, "/// Fallbacks: {}", v.join(", ")));
         }
         if fn_overrides.contains_key(&*symbol) {
             try!(writeln!(dest,
@@ -246,7 +246,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
                 Some(fbs) => {
                     fbs.iter()
                        .map(|name| format!("\"{}\"", super::gen_symbol_name(ns, &name)))
-                       .collect::<Vec<_>>().connect(", ")
+                       .collect::<Vec<_>>().join(", ")
                 },
                 None => format!(""),
             }
@@ -265,7 +265,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
                     struct_name = ns.fmt_struct_name(),
                     fn_override = fn_override,
                     load = load,
-                    override_params = override_params.connect(", "),
+                    override_params = override_params.join(", "),
                     return_suffix = return_suffix,
                     condition = condition
                 ))
@@ -303,7 +303,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
         let return_suffix = super::gen_return_type(c);
         let println = format!("(self.trace_callback)(\"{ident}\", &format!(\"{params}\"{args}), &format!(\"{{:?}}\", r));",
                                 ident = c.proto.ident,
-                                params = (0 .. idents.len()).map(|_| "{:?}".to_string()).collect::<Vec<_>>().connect(", "),
+                                params = (0 .. idents.len()).map(|_| "{:?}".to_string()).collect::<Vec<_>>().join(", "),
                                 args = idents.iter().zip(typed_params.iter())
                                       .map(|(name, ty)| {
                                           if ty.contains("GLDEBUGPROC") {
@@ -315,7 +315,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
 
         let call = match fn_overrides.get(&*symbol) {
             Some(_) => {
-                let connected_typed_params = typed_params.connect(", ");
+                let connected_typed_params = typed_params.join(", ");
                 let override_params = typed_params_to_override_params(ns.fmt_struct_name(), typed_params, &return_suffix);
                 format!(
                     "match self.{name} {{
@@ -323,10 +323,10 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
                         OverridableFnPtr::Loaded(original) => __gl_imports::mem::transmute::<_, extern \"system\" fn({typed_params}) -> {return_suffix}>(original)({idents})
                     }}",
                     name = c.proto.ident,
-                    override_params = override_params.connect(", "),
+                    override_params = override_params.join(", "),
                     typed_params = connected_typed_params,
                     return_suffix = return_suffix,
-                    idents = idents.connect(", ")
+                    idents = idents.join(", ")
                 )
             },
             None => {
@@ -334,9 +334,9 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
                     "__gl_imports::mem::transmute::<_, extern \"system\" fn({typed_params}) -> {return_suffix}>\
                     (self.{name}.f)({idents})",
                     name = c.proto.ident,
-                    typed_params = typed_params.connect(", "),
+                    typed_params = typed_params.join(", "),
                     return_suffix = return_suffix,
-                    idents = idents.connect(", ")
+                    idents = idents.join(", ")
                 )
             }
         };
@@ -351,7 +351,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
             }}",
             name = c.proto.ident,
             full_name = symbol,
-            params = super::gen_parameters(c, true, true).connect(", "),
+            params = super::gen_parameters(c, true, true).join(", "),
             return_suffix = super::gen_return_type(c),
             call = call,
             println = println
@@ -369,7 +369,7 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
 fn typed_params_to_override_params(struct_name: &str, typed_params: Vec<String>, return_suffix: &str) -> Vec<String> {
     let mut override_params = vec!(
         format!("&{}", struct_name),
-        format!("&extern \"system\" fn({typed_params}) -> {return_suffix}", typed_params = typed_params.connect(", "), return_suffix = return_suffix)
+        format!("&extern \"system\" fn({typed_params}) -> {return_suffix}", typed_params = typed_params.join(", "), return_suffix = return_suffix)
     );
     for param in typed_params {
         override_params.push(param);
