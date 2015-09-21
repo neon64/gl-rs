@@ -48,6 +48,7 @@ fn write_header<W>(dest: &mut W) -> io::Result<()> where W: io::Write {
             extern crate gl_common;
             extern crate libc;
             pub use std::mem;
+            pub use std::slice;
             pub use std::marker::Send;
             pub use std::cell::RefCell;
             pub use std::ptr::null_mut;
@@ -231,7 +232,10 @@ fn write_impl<W>(registry: &Registry, ns: &Ns, fn_overrides: &HashMap<&str, (&st
                         enabled: true,
                         callback: None,
                         user_param: __gl_imports::null_mut(),
-                        last_error: NO_ERROR
+                        last_error: NO_ERROR,
+                        last_debug_message: None,
+                        debug_group_number: 0,
+                        rules: Vec::new()
                     }}),",
         ns = ns.fmt_struct_name()
     ));

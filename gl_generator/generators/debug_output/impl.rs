@@ -1,3 +1,39 @@
+
+//
+// Rust implementation based upon the article here:
+// http://renderingpipeline.com/2013/09/simulating-khr_debug-on-macos-x/
+//
+//
+// Use-cases:
+//
+// Use this as a fallback on systems that don't implement KHR_debug for debugging only,
+// don't use this code in shipping release builds - it will slow down the application!
+// Using a debug callback instead of lots of glGetError() calls should work fine,
+// MessageControl, DebugGroups and DebugLabels are only implemented as fallbacks, in case
+// you have to rely on those features, you want to reimplement them in a more efficient way.
+//
+// Wrong behavior:
+//
+// * Does not support multiple OpenGL contexts, all errors from all contexts are mixed.
+//   All settings (including the debug callback) are set for all contexts.
+//
+// * glObjectLabel and glObjectPtrLabel do not check if the object to label exists and thus
+//   will not generate a GL_INVALID_VALUE.
+//
+// * glObjectLabel can label GL_DISPLAY_LIST even in Core profiles.
+//
+// Inefficiency:
+//
+// * Using this, the number of GL calls doubles as each call will get followed by a glGetError.
+// * This will also force OpenGL to run synchronous which will reduce the performance!
+// * ObjectLabels are implemented inefficiently and are not used internally. The functionality is
+//   only present to be compatible with KHR_debug.
+// * DebugGroups and glDebugMessageControl are not efficiently implemented.
+//
+// This implementation always behaves synchronous, even if GL_DEBUG_OUTPUT_SYNCHRONOUS is
+// disabled (the default btw.). This is legal by the spec.
+//
+
 extern "system" fn fallback_get_error(&self, original: &extern "system" fn() -> types::GLenum) -> types::GLenum {
     // if there was an error, report it. if not report the last global error
     // which might got set by the automatic error checks
@@ -56,11 +92,11 @@ fn debug_message_insert_internal(&self, source: types::GLenum, ty: types::GLenum
     }
 
     // there might be rules inserted by glDebugMessageControl to mute this message:
-    /*if !should_message_get_processed(source, ty, id, severity) {
+    if(!self.should_message_get_processed(source, ty, id, severity)) {
         return;
-    }*/
+    }
 
-    let state = self.debug_output.borrow();
+    let mut state = self.debug_output.borrow_mut();
 
     match state.callback {
         Some(callback) => {
@@ -68,25 +104,97 @@ fn debug_message_insert_internal(&self, source: types::GLenum, ty: types::GLenum
         },
         None => {
             // no callback, store it in the log
-            /*g_LastDebugMessageEmpty = false;
-            g_LastDebugMessage.source = source;
-            g_LastDebugMessage.type   = type;
-            g_LastDebugMessage.id     = id;
-            g_LastDebugMessage.severity = severity;
-            g_LastDebugMessage.length = length;
-            g_LastDebugMessage.buf    = buf;*/
+            state.last_debug_message = Some(DebugMessage {
+                source: source,
+                ty: ty,
+                id: id,
+                severity: severity,
+                length: length,
+                buf: buf
+            });
         }
     }
+}
+
+fn fallback_debug_message_control(&self, source: types::GLenum, ty: types::GLenum, severity: types::GLenum, count: types::GLsizei, ids: *const types::GLuint, enabled: types::GLboolean) {
+    if(count != 0 && (source == DONT_CARE || ty == DONT_CARE || severity != DONT_CARE)) {
+        // see KHR_debug 5.5.4
+        self.insert_api_error(INVALID_OPERATION, "invalid operation in glDebugMessageControl: if an ID is specified, source and type have to be specified as well but severity has to be GL_DONT_CARE");
+    }
+
+    let ids = unsafe { __gl_imports::slice::from_raw_parts(ids, count as usize).to_vec() };
+
+    let mut state = self.debug_output.borrow_mut();
+    let debug_group = state.debug_group_number;
+
+    state.rules.push(DebugMessageControlRule {
+        source: source,
+        ty: ty,
+        severity: severity,
+        enabled: enabled,
+        debug_group: debug_group,
+        ids: ids
+    });
+}
+
+fn fallback_get_debug_message_log(&self, count: types::GLuint, bufsize: types::GLsizei, sources: *mut types::GLenum, types: *mut types::GLenum, ids: *mut types::GLuint, severities: *mut types::GLenum, lengths: *mut types::GLsizei, message_log: *mut types::GLchar) -> types::GLuint {
+    if bufsize < 0 && message_log != __gl_imports::null_mut() {
+        self.insert_api_error(INVALID_VALUE , "invalid value in glGetDebugMessageLog: bufsize < 0 and messageLog != NULL" );
+        return 0;
+    }
+
+    let mut state = self.debug_output.borrow_mut();
+
+    if count == 0 {
+        return 0;
+    }
+
+    match state.last_debug_message.take() {
+        Some(ref message) => {
+            if types != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(types, count as usize)[0] }; v = message.ty; }
+            if sources != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(sources, count as usize)[0] }; v = message.source; }
+            if ids != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(ids, count as usize)[0] }; v = message.id; }
+            if severities != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(severities, count as usize)[0] }; v = message.severity; }
+            if lengths != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(lengths, count as usize)[0] }; v = message.length; }
+
+            // length is without the 0-termination
+            if bufsize <= message.length {
+                // won't fit, don't return the error :-(
+                // 6.1.15 of KHR_debug
+                return 0;
+            }
+
+            unsafe { __gl_imports::libc::strncpy(message_log, message.buf, bufsize as u64); }
+            let mut null = unsafe { __gl_imports::slice::from_raw_parts(message_log, count as usize)[(bufsize-1) as usize] };
+            null = 0;
+
+            1
+        },
+        None => { return 0; }
+    }
+}
+
+fn should_message_get_processed(&self, source: types::GLenum, ty: types::GLenum, id: types::GLuint, severity: types::GLenum) -> bool {
+    // check from the newest to the oldest rule,
+    // first one to be applyable to this message defines if it gets processed:
+    for rule in self.debug_output.borrow().rules.iter().rev() {
+        if rule_applies(&rule, source, ty, id, severity) {
+            return rule.enabled == 1;
+        }
+    }
+
+    // no matching rule found, apply default behavior:
+    if severity == DEBUG_SEVERITY_LOW {
+        return false;
+    }
+
+    true
 }
 
 /// artificially creates a gl error
 fn insert_api_error(&self, ty: types::GLenum, message: &str) {
     self.debug_output.borrow_mut().last_error = ty;
-    /*println!("{:?}", message as *const _ as *const __gl_imports::libc::c_void);
-    let message = __gl_imports::CString::new(message).unwrap();
-    println!("{:?}", message);
-    println!("{:?}", message.as_ptr());*/
-    self.debug_message_insert_internal(DEBUG_SOURCE_API, DEBUG_TYPE_ERROR, ty, DEBUG_SEVERITY_HIGH, /*-1*/ message.len() as i32, message.as_bytes().as_ptr() as *const i8);
+    self.debug_message_insert_internal(DEBUG_SOURCE_API, DEBUG_TYPE_ERROR, ty, DEBUG_SEVERITY_HIGH, message.len() as i32, message.as_bytes().as_ptr() as *const i8);
 }
 
 /// checks for an OpenGL error and reports it
