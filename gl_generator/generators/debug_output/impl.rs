@@ -92,7 +92,7 @@ fn debug_message_insert_internal(&self, source: types::GLenum, ty: types::GLenum
     }
 
     // there might be rules inserted by glDebugMessageControl to mute this message:
-    if(!self.should_message_get_processed(source, ty, id, severity)) {
+    if !self.should_message_get_processed(source, ty, id, severity) {
         return;
     }
 
@@ -117,7 +117,7 @@ fn debug_message_insert_internal(&self, source: types::GLenum, ty: types::GLenum
 }
 
 fn fallback_debug_message_control(&self, source: types::GLenum, ty: types::GLenum, severity: types::GLenum, count: types::GLsizei, ids: *const types::GLuint, enabled: types::GLboolean) {
-    if(count != 0 && (source == DONT_CARE || ty == DONT_CARE || severity != DONT_CARE)) {
+    if count != 0 && (source == DONT_CARE || ty == DONT_CARE || severity != DONT_CARE) {
         // see KHR_debug 5.5.4
         self.insert_api_error(INVALID_OPERATION, "invalid operation in glDebugMessageControl: if an ID is specified, source and type have to be specified as well but severity has to be GL_DONT_CARE");
     }
@@ -151,11 +151,11 @@ fn fallback_get_debug_message_log(&self, count: types::GLuint, bufsize: types::G
 
     match state.last_debug_message.take() {
         Some(ref message) => {
-            if types != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(types, count as usize)[0] }; v = message.ty; }
-            if sources != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(sources, count as usize)[0] }; v = message.source; }
-            if ids != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(ids, count as usize)[0] }; v = message.id; }
-            if severities != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(severities, count as usize)[0] }; v = message.severity; }
-            if lengths != __gl_imports::null_mut() { let mut v = unsafe { __gl_imports::slice::from_raw_parts(lengths, count as usize)[0] }; v = message.length; }
+            if types != __gl_imports::null_mut() { let v = unsafe { __gl_imports::slice::from_raw_parts_mut(types, count as usize) }; v[0] = message.ty; }
+            if sources != __gl_imports::null_mut() { let v = unsafe { __gl_imports::slice::from_raw_parts_mut(sources, count as usize) }; v[0] = message.source; }
+            if ids != __gl_imports::null_mut() { let v = unsafe { __gl_imports::slice::from_raw_parts_mut(ids, count as usize) }; v[0] = message.id; }
+            if severities != __gl_imports::null_mut() { let v = unsafe { __gl_imports::slice::from_raw_parts_mut(severities, count as usize) }; v[0] = message.severity; }
+            if lengths != __gl_imports::null_mut() { let v = unsafe { __gl_imports::slice::from_raw_parts_mut(lengths, count as usize) }; v[0] = message.length; }
 
             // length is without the 0-termination
             if bufsize <= message.length {
@@ -165,8 +165,8 @@ fn fallback_get_debug_message_log(&self, count: types::GLuint, bufsize: types::G
             }
 
             unsafe { __gl_imports::libc::strncpy(message_log, message.buf, bufsize as u64); }
-            let mut null = unsafe { __gl_imports::slice::from_raw_parts(message_log, count as usize)[(bufsize-1) as usize] };
-            null = 0;
+            let ref mut null = unsafe { __gl_imports::slice::from_raw_parts_mut(message_log, count as usize)[(bufsize-1) as usize] };
+            *null = 0;
 
             1
         },

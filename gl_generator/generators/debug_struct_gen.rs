@@ -32,6 +32,8 @@ impl super::Generator for DebugStructGenerator {
         let mut fn_overrides = HashMap::new();
         fn_overrides.insert("glDebugMessageCallback", ("fallback_debug_message_callback", "debug_output_fallback_required"));
         fn_overrides.insert("glDebugMessageInsert", ("fallback_debug_message_insert", "debug_output_fallback_required"));
+        fn_overrides.insert("glGetDebugMessageLog", ("fallback_get_debug_message_log", "debug_output_fallback_required"));
+        fn_overrides.insert("glDebugMessageControl", ("fallback_debug_message_control", "debug_output_fallback_required"));
         fn_overrides.insert("glGetError", ("fallback_get_error", "debug_output_fallback_required"));
 
         try!(write_struct(registry, &ns, &fn_overrides, dest));
